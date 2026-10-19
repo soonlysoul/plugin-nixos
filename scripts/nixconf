@@ -1,0 +1,840 @@
+#!/usr/bin/env bash
+#
+# nixconf — trouve, prouve et vérifie la configuration NixOS de ce poste.
+#
+# Il n'élève jamais les privilèges, n'écrit jamais dans /etc/nixos et n'active
+# rien : la commande qui applique, il l'imprime. C'est ce qui permet à une
+# session assistée de PROUVER qu'une configuration tient au lieu de l'affirmer.
+#
+# USAGE
+#   nixconf localiser                     où est la configuration, de quel genre, en quel état
+#   nixconf choisir <répertoire>          retenir la configuration de ce poste
+#   nixconf hotes                         les configurations que la source définit
+#   nixconf verifier [hôte…]              construire sans privilège — toutes, sans argument
+#   nixconf option <chemin> [hôte]        prouver qu'une option existe, et la décrire
+#   nixconf paquet <attribut> [hôte]      un paquet TEL QUE la configuration le voit
+#   nixconf ecart <chemin du store>       ce qui changerait, paquet par paquet
+#   nixconf lints [fichier…]              nixfmt, statix, deadnix sur les fichiers touchés
+#   nixconf proposer [hôte]               la commande d'application, à proposer
+#   nixconf adopter <destination> [hôte]  copier /etc/nixos dans un dépôt git à soi
+#
+# CODES DE SORTIE — ceux de nixos-up, pour qui connaît l'une des deux commandes
+#   0  fait
+#   1  erreur d'usage, ou poste pas prêt (configuration introuvable ou ambiguë,
+#      description matérielle absente, hôte non précisé)
+#   2  la configuration est invalide — ou, pour « lints », un signalement
+#   4  un fichier de la configuration n'est pas enregistré dans git
+#
+# OÙ IL CHERCHE LA CONFIGURATION, dans cet ordre — le premier qui répond l'emporte :
+#   1. $NIXOS_CONF
+#   2. le répertoire courant, et ses parents
+#   3. le choix retenu par « nixconf choisir »
+#   4. le dépôt que la commande nixos-up installée porte en dur
+#   5. la cible de /etc/nixos, si c'est un lien
+#   6. les emplacements usuels (~/Nixos, ~/nixos-config, ~/.config/nixos…) —
+#      seulement s'il n'y en a qu'un : à deux, il ne choisit pas
+#   7. /etc/nixos lui-même
+#
+# SURCHARGES (réservées aux tests — voir tests/test_nixconf.sh)
+#   NIXCONF_ETC             l'emplacement système (défaut : /etc/nixos)
+#   NIXCONF_CHOIX           le fichier du choix (défaut : ~/.config/nixconf/configuration)
+#   NIXCONF_SYSTEME_ACTUEL  le système actif (défaut : /run/current-system)
+#   NIXCONF_NIX_CONF        la configuration de Nix (défaut : /etc/nix/nix.conf)
+#   NIXCONF_VERSION         la version de NixOS (défaut : celle de nixos-version)
+#
+# Sans « pipefail », délibérément : ce script interroge par « … | grep -q », et
+# sous pipefail un grep qui sort tôt fait échouer le tube par le SIGPIPE de son
+# amont — ou un fichier absent en tête de tube l'emporte sur un résultat trouvé
+# (mesuré le 2026-10-19 : flakes=non sur un poste qui les active).
+set -u
+
+readonly SUCCES=0
+readonly USAGE=1
+readonly INVALIDE=2
+readonly NON_ENREGISTRE=4
+
+readonly PROGRAMME="nixconf"
+
+etc="${NIXCONF_ETC:-/etc/nixos}"
+fichier_choix="${NIXCONF_CHOIX:-${XDG_CONFIG_HOME:-$HOME/.config}/nixconf/configuration}"
+systeme_actuel="${NIXCONF_SYSTEME_ACTUEL:-/run/current-system}"
+nix_conf="${NIXCONF_NIX_CONF:-/etc/nix/nix.conf}"
+
+ici="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+moi="bash $ici/nixconf"
+modeles="$ici/../modeles"
+
+# Les flakes ne sont pas activés sur un NixOS fraîchement installé. Le drapeau
+# les active pour cet appel seulement, et ne change rien là où ils le sont déjà.
+NIXF=(--extra-experimental-features 'nix-command flakes')
+
+erreur() { printf '%s: %s\n' "$PROGRAMME" "$*" >&2; }
+
+usage() {
+  sed -n '/^# USAGE/,/^# CODES/p' "${BASH_SOURCE[0]}" | sed -e '$d' -e 's/^# \{0,1\}//' >&2
+  exit "$USAGE"
+}
+
+# ---------------------------------------------------------------------------
+# DÉTECTION
+# ---------------------------------------------------------------------------
+CONF=""
+GENRE="aucun"
+SOURCE=""
+DEPOT=""
+CANDIDATS=()
+IMPUR=()
+
+# Rend le répertoire de configuration flake que contient $1 : $1 lui-même, ou
+# son conf-nixos/ (la disposition du dépôt nixos-config). Le mot est cherché
+# dans flake.nix, puis dans les .nix proches : flake-parts et ses semblables
+# déclarent les configurations ailleurs que dans flake.nix.
+flake_dans() {
+  local d
+  for d in "$1" "$1/conf-nixos"; do
+    [ -f "$d/flake.nix" ] || continue
+    if grep -qs nixosConfigurations "$d/flake.nix" \
+      || find "$d" -maxdepth 3 -name '*.nix' -not -path '*/.git/*' \
+        -exec grep -ls nixosConfigurations {} + 2> /dev/null | grep -q .; then
+      (cd "$d" && pwd)
+      return 0
+    fi
+  done
+  return 1
+}
+
+classique_dans() {
+  [ -f "$1/configuration.nix" ] || return 1
+  (cd "$1" && pwd)
+}
+
+config_dans() { flake_dans "$1" || classique_dans "$1"; }
+
+genre_de() {
+  if [ -f "$1/flake.nix" ]; then printf 'flake\n'; else printf 'classique\n'; fi
+}
+
+# Le dépôt que la commande nixos-up installée porte en dur. Le module du dépôt
+# nixos-config le bake dans « depot="${NIXOS_UP_DEPOT:-/chemin}" » : c'est le
+# seul endroit où cette machine dit elle-même où vit sa configuration.
+depot_nixos_up() {
+  local bin chemin
+  bin="$(command -v nixos-up 2> /dev/null)" || return 1
+  bin="$(readlink -f "$bin")"
+  chemin="$(grep -m1 -oE 'NIXOS_UP_DEPOT:-[^}"]+' "$bin" 2> /dev/null)" || return 1
+  chemin="${chemin#NIXOS_UP_DEPOT:-}"
+  [ "$chemin" = "@depot@" ] && return 1
+  [ -n "$chemin" ] && printf '%s\n' "$chemin"
+}
+
+emplacements_usuels() {
+  printf '%s\n' \
+    "$HOME/Nixos" "$HOME/nixos" "$HOME/nixos-config" "$HOME/.nixos" \
+    "$HOME/.config/nixos" "$HOME/dotfiles" "$HOME/.dotfiles" \
+    "$HOME/Documents/Nixos" "$HOME/Documents/nixos" "$HOME/Documents/nixos-config" \
+    "$HOME/src/nixos-config" "$HOME/code/nixos-config"
+}
+
+retenir() {
+  [ -z "$CONF" ] || return 0
+  CONF="$1"
+  GENRE="$(genre_de "$1")"
+  SOURCE="$2"
+}
+
+# Ajoute $1 aux candidats s'il n'y est pas encore.
+candidat() {
+  local c
+  for c in ${CANDIDATS[@]+"${CANDIDATS[@]}"}; do
+    [ "$c" = "$1" ] && return 0
+  done
+  CANDIDATS+=("$1")
+}
+
+trouver_conf() {
+  local d c usuels=()
+
+  if [ -n "${NIXOS_CONF:-}" ]; then
+    c="$(config_dans "$NIXOS_CONF")" || {
+      erreur "NIXOS_CONF=« $NIXOS_CONF » ne contient ni flake NixOS ni configuration.nix"
+      return 1
+    }
+    retenir "$c" "NIXOS_CONF"
+  fi
+
+  # Le répertoire courant ne connaît que les flakes : un configuration.nix
+  # trouvé en remontant peut appartenir à n'importe quoi.
+  d="$PWD"
+  while :; do
+    if c="$(flake_dans "$d")"; then
+      retenir "$c" "répertoire courant"
+      candidat "$c"
+      break
+    fi
+    [ "$d" = / ] && break
+    d="$(dirname "$d")"
+  done
+
+  if [ -f "$fichier_choix" ]; then
+    d="$(head -n1 "$fichier_choix")"
+    if c="$(config_dans "$d")"; then
+      retenir "$c" "choix retenu ($fichier_choix)"
+      candidat "$c"
+    fi
+  fi
+
+  if d="$(depot_nixos_up)" && c="$(flake_dans "$d")"; then
+    retenir "$c" "nixos-up"
+    candidat "$c"
+  fi
+
+  if [ -L "$etc" ] && c="$(config_dans "$(readlink -f "$etc")")"; then
+    retenir "$c" "$etc (lien)"
+    candidat "$c"
+  fi
+
+  while IFS= read -r d; do
+    if c="$(flake_dans "$d")"; then
+      case " ${usuels[*]-} " in *" $c "*) ;; *) usuels+=("$c") ;; esac
+      candidat "$c"
+    fi
+  done < <(emplacements_usuels)
+
+  if [ -z "$CONF" ] && [ "${#usuels[@]}" -gt 1 ]; then
+    GENRE="ambigu"
+    SOURCE="emplacements usuels"
+  elif [ "${#usuels[@]}" -eq 1 ]; then
+    retenir "${usuels[0]}" "emplacement usuel"
+  fi
+
+  if [ "$GENRE" != ambigu ] && c="$(config_dans "$etc")"; then
+    retenir "$c" "$etc"
+    candidat "$c"
+  fi
+
+  if [ -n "$CONF" ]; then
+    DEPOT="$(git -C "$CONF" rev-parse --show-toplevel 2> /dev/null)" || DEPOT=""
+    if impur_requis; then IMPUR=(--impure); fi
+  fi
+  return 0
+}
+
+# Arrête la commande si la configuration n'est pas trouvée, ou pas tranchée.
+exiger_conf() {
+  trouver_conf || exit "$USAGE"
+  case "$GENRE" in
+    ambigu)
+      erreur "plusieurs configurations trouvées, et aucune ne l'emporte :"
+      printf '  %s\n' "${CANDIDATS[@]}" >&2
+      printf '\nTrancher une fois pour toutes :\n  %s choisir <répertoire>\nou pour cet appel : NIXOS_CONF=<répertoire> %s …\n' "$moi" "$moi" >&2
+      exit "$USAGE"
+      ;;
+    aucun)
+      erreur "aucune configuration NixOS trouvée — ni dépôt, ni $etc."
+      exit "$USAGE"
+      ;;
+  esac
+}
+
+# Une configuration qui lit hors d'elle ne s'évalue qu'en mode impur : un
+# import par chemin absolu (la description matérielle laissée dans /etc/nixos,
+# typiquement), une recherche dans NIX_PATH (<nixpkgs>), une variable
+# d'environnement. Les lignes commentées ne comptent pas. Ce que ce repérage
+# manque, la construction le rattrape : elle réessaie en impur et le dit.
+impur_requis() {
+  [ "$GENRE" = flake ] || return 1
+  grep -rqsE --include='*.nix' \
+    '^[^#]*(/etc/nixos/[A-Za-z0-9_./-]*\.nix|<[A-Za-z0-9_.-]+(/[^>]*)?>|builtins\.getEnv)' "$CONF"
+}
+
+materiel_requis() {
+  grep -rqsE --include='*.nix' '^[^#]*/etc/nixos/hardware-configuration\.nix' "$CONF"
+}
+
+flakes_actives() {
+  printf '%s\n' "${NIX_CONFIG:-}" | grep -Eq '^[[:space:]]*(extra-)?experimental-features[[:space:]]*=.*flakes' && return 0
+  grep -hsE '^[[:space:]]*(extra-)?experimental-features[[:space:]]*=' \
+    "$nix_conf" "${XDG_CONFIG_HOME:-$HOME/.config}/nix/nix.conf" | grep -q flakes
+}
+
+non_enregistres() {
+  [ -n "$DEPOT" ] || return 0
+  git -C "$CONF" ls-files --others --exclude-standard -- . 2> /dev/null
+}
+
+version_nixos() {
+  if [ -n "${NIXCONF_VERSION:-}" ]; then
+    printf '%s\n' "$NIXCONF_VERSION"
+  elif command -v nixos-version > /dev/null 2>&1; then
+    nixos-version | cut -d' ' -f1
+  fi
+}
+
+# Le chemin de la configuration tel qu'on l'écrit à git : relatif au dépôt.
+relatif_au_depot() {
+  local r="${CONF#"$DEPOT"}"
+  r="${r#/}"
+  printf '%s\n' "${r:-.}"
+}
+
+# ---------------------------------------------------------------------------
+# HÔTES ET ÉVALUATION
+# ---------------------------------------------------------------------------
+lister_hotes() {
+  if [ "$GENRE" = classique ]; then
+    printf -- '-\n'
+    return 0
+  fi
+  nix "${NIXF[@]}" eval ${IMPUR[@]+"${IMPUR[@]}"} --raw "$CONF#nixosConfigurations" \
+    --apply 'c: builtins.concatStringsSep "\n" (builtins.attrNames c)' && printf '\n'
+}
+
+# Pose HOTE : celui demandé, ou le seul que la configuration définit. Jamais
+# deviné depuis le nom de la machine — un poste renommé ou fraîchement installé
+# ne porte pas forcément le nom de sa configuration.
+choisir_hote() {
+  local liste
+  if [ "$GENRE" = classique ]; then
+    HOTE="-"
+    return 0
+  fi
+  if [ -n "${1:-}" ]; then
+    HOTE="$1"
+    return 0
+  fi
+  liste="$(lister_hotes)" || {
+    erreur "impossible de lister les configurations de $CONF"
+    return 1
+  }
+  if [ "$(printf '%s\n' "$liste" | grep -c .)" -eq 1 ]; then
+    HOTE="$(printf '%s\n' "$liste" | grep .)"
+    return 0
+  fi
+  erreur "plusieurs configurations — préciser laquelle (jamais devinée depuis le nom de la machine) :"
+  printf '%s\n' "$liste" | grep . | sed 's/^/  /' >&2
+  return 1
+}
+
+# evaluer <chemin sous la configuration> <fonction appliquée>
+# Le même accès pour les deux genres : nixosConfigurations.<hôte> d'un flake, ou
+# l'évaluation de <nixpkgs/nixos> sur configuration.nix. Les deux exposent
+# config, options et pkgs.
+evaluer() {
+  local sous="${1:+.$1}"
+  if [ "$GENRE" = flake ]; then
+    nix "${NIXF[@]}" eval ${IMPUR[@]+"${IMPUR[@]}"} --raw \
+      "$CONF#nixosConfigurations.$HOTE$sous" --apply "$2"
+  else
+    nix "${NIXF[@]}" eval --impure --raw \
+      --expr "(import <nixpkgs/nixos> { configuration = /. + \"$CONF/configuration.nix\"; })$sous" \
+      --apply "$2"
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# COMMANDES
+# ---------------------------------------------------------------------------
+cmd_localiser() {
+  local outil presents=() absents=() regles=() f etat=0 nu
+  trouver_conf || exit "$USAGE"
+
+  if [ -e /etc/NIXOS ]; then
+    printf 'nixos=oui\n'
+  else
+    printf 'nixos=non\n'
+  fi
+  printf 'version=%s\n' "$(version_nixos)"
+  printf 'genre=%s\n' "$GENRE"
+  printf 'configuration=%s\n' "$CONF"
+  printf 'source=%s\n' "$SOURCE"
+  for f in ${CANDIDATS[@]+"${CANDIDATS[@]}"}; do
+    [ "$f" = "$CONF" ] || printf 'candidat=%s\n' "$f"
+  done
+
+  if [ -n "$CONF" ]; then
+    printf 'depot=%s\n' "$DEPOT"
+    if [ -w "$CONF" ]; then printf 'inscriptible=oui\n'; else printf 'inscriptible=non\n'; fi
+    for f in "$DEPOT/CLAUDE.md" "$DEPOT/AGENTS.md" "$CONF/CLAUDE.md" "$DEPOT/README.md" "$CONF/README.md"; do
+      [ -n "$DEPOT" ] || [ "${f#"$CONF"}" != "$f" ] || continue
+      [ -f "$f" ] || continue
+      case " ${regles[*]-} " in *" $f "*) ;; *) regles+=("$f") ;; esac
+    done
+    for f in ${regles[@]+"${regles[@]}"}; do printf 'regles=%s\n' "$f"; done
+    if [ "${#IMPUR[@]}" -gt 0 ]; then
+      printf 'evaluation=impure\n'
+    else
+      printf 'evaluation=pure\n'
+    fi
+    if materiel_requis; then
+      if [ -f "$etc/hardware-configuration.nix" ]; then
+        printf 'materiel=%s/hardware-configuration.nix\n' "$etc"
+      else
+        printf 'materiel=ABSENTE (%s/hardware-configuration.nix)\n' "$etc"
+      fi
+    fi
+    if [ -n "$DEPOT" ]; then
+      nu="$(non_enregistres | grep -c .)"
+      printf 'non_enregistres=%s\n' "$nu"
+      printf 'modifies=%s\n' "$(git -C "$CONF" status --porcelain -- . 2> /dev/null | grep -c .)"
+    fi
+  fi
+
+  if flakes_actives; then printf 'flakes=oui\n'; else printf 'flakes=non\n'; fi
+  printf 'systeme_actif=%s\n' "$(readlink "$systeme_actuel" 2> /dev/null)"
+  printf 'nom_machine=%s\n' "$(uname -n)"
+
+  # L'avertissement ne vaut que pour un dépôt que nixos-up sait déposer : deux
+  # copies du même dépôt sur un poste, et la commande installée porte l'autre.
+  if f="$(depot_nixos_up)"; then
+    printf 'nixos_up_depot=%s\n' "$f"
+    if [ -n "$DEPOT" ] && [ -f "$CONF/nixos-up" ] \
+      && [ "$(readlink -f "$f")" != "$(readlink -f "$DEPOT")" ]; then
+      printf 'avertissement=nixos-up dépose %s, pas %s\n' "$f" "$DEPOT"
+    fi
+  fi
+
+  for outil in git jq nixfmt statix deadnix nvd mcp-nixos nixos-up nh home-manager; do
+    if command -v "$outil" > /dev/null 2>&1; then presents+=("$outil"); else absents+=("$outil"); fi
+  done
+  printf 'outils_presents=%s\n' "${presents[*]-}"
+  printf 'outils_absents=%s\n' "${absents[*]-}"
+
+  case "$GENRE" in ambigu | aucun) etat="$USAGE" ;; esac
+  exit "$etat"
+}
+
+cmd_choisir() {
+  local c
+  [ -n "${1:-}" ] || usage
+  c="$(config_dans "$1")" || {
+    erreur "« $1 » ne contient ni flake NixOS ni configuration.nix"
+    exit "$USAGE"
+  }
+  mkdir -p "$(dirname "$fichier_choix")"
+  printf '%s\n' "$c" > "$fichier_choix"
+  printf 'Configuration retenue : %s\n(dans %s ; NIXOS_CONF et le répertoire courant passent avant)\n' \
+    "$c" "$fichier_choix"
+}
+
+cmd_hotes() {
+  exiger_conf
+  lister_hotes || exit "$INVALIDE"
+}
+
+# Le garde-fou des fichiers non enregistrés. Nix ne lit d'un dépôt git que ce
+# qui y est enregistré : un module oublié se construirait donc SANS ERREUR, en
+# son absence. Seuls les flakes sont concernés — nix-build lit le disque.
+controle_enregistrement() {
+  local liste
+  [ "$GENRE" = flake ] && [ -n "$DEPOT" ] || return 0
+  liste="$(non_enregistres)"
+  [ -n "$liste" ] || return 0
+  erreur "des fichiers de la configuration ne sont pas enregistrés dans git.
+         La construction ne les verrait pas — et passerait sans eux."
+  printf 'En cause :\n' >&2
+  printf '%s\n' "$liste" | sed 's/^/  /' >&2
+  printf '\nLes enregistrer (le commit peut attendre), puis relancer :\n  git -C %s add -- %s\n' \
+    "$DEPOT" "$(relatif_au_depot)" >&2
+  return 1
+}
+
+controle_materiel() {
+  materiel_requis || return 0
+  [ -f "$etc/hardware-configuration.nix" ] && return 0
+  erreur "la configuration importe $etc/hardware-configuration.nix, qui n'existe pas."
+  cat >&2 << FIN
+
+La produire — à proposer à l'utilisateur, qui la lance lui-même :
+  sudo nixos-generate-config --show-hardware-config \\
+    | sudo tee $etc/hardware-configuration.nix > /dev/null
+
+Elle décrit ce poste et lui seul : disques, points de montage, microcode.
+FIN
+  return 1
+}
+
+# construire <hôte> — pose CHEMIN, l'assemblage construit. Appelée hors de
+# toute substitution : le passage en --impure qu'elle décide doit survivre à
+# l'appel, pour les hôtes suivants et pour la commande proposée.
+CHEMIN=""
+construire() {
+  local h="$1" err statut
+  CHEMIN=""
+  err="$(mktemp)"
+  if [ "$GENRE" = classique ]; then
+    CHEMIN="$(nix-build '<nixpkgs/nixos>' -A system --no-out-link \
+      -I "nixos-config=$CONF/configuration.nix" 2> "$err")"
+  else
+    CHEMIN="$(nix "${NIXF[@]}" build --no-link --print-out-paths ${IMPUR[@]+"${IMPUR[@]}"} \
+      "$CONF#nixosConfigurations.$h.config.system.build.toplevel" 2> "$err")"
+  fi
+  statut=$?
+
+  # L'évaluation pure est essayée d'abord, parce que c'est ainsi que
+  # nixos-rebuild --flake évaluera : un --impure systématique masquerait une
+  # erreur de pureté que l'application rencontrerait. Si elle échoue POUR CETTE
+  # RAISON, on le dit, et la commande proposée portera --impure elle aussi.
+  if [ "$statut" -ne 0 ] && [ "$GENRE" = flake ] && [ "${#IMPUR[@]}" -eq 0 ] \
+    && grep -qiE 'pure eval|absolute path|in pure evaluation mode' "$err"; then
+    printf "L'évaluation pure refuse « %s » (elle lit hors du dépôt) : nouvel essai avec --impure.\n" "$h" >&2
+    IMPUR=(--impure)
+    rm -f "$err"
+    construire "$h"
+    return $?
+  fi
+
+  if [ "$statut" -ne 0 ]; then
+    tail -n 40 "$err" >&2
+    rm -f "$err"
+    return 1
+  fi
+  grep -E '^(evaluation )?warning:|^trace:' "$err" >&2
+  rm -f "$err"
+  CHEMIN="$(printf '%s\n' "$CHEMIN" | tail -n1)"
+}
+
+cmd_verifier() {
+  local hotes=() h chemin echecs=0 reussis=()
+  exiger_conf
+  controle_enregistrement || exit "$NON_ENREGISTRE"
+  controle_materiel || exit "$USAGE"
+
+  if [ "$GENRE" = classique ]; then
+    hotes=(-)
+  elif [ "$#" -gt 0 ]; then
+    hotes=("$@")
+  else
+    mapfile -t hotes < <(lister_hotes | grep .)
+    if [ "${#hotes[@]}" -eq 0 ]; then
+      erreur "impossible de lister les configurations de $CONF — l'évaluation a échoué."
+      exit "$INVALIDE"
+    fi
+  fi
+
+  printf 'Configuration : %s (%s)\n' "$CONF" "$GENRE"
+  for h in "${hotes[@]}"; do
+    if [ "$h" = - ]; then
+      printf 'Construction de %s/configuration.nix …\n' "$CONF"
+    else
+      printf 'Construction de « %s » …\n' "$h"
+    fi
+    if construire "$h"; then
+      printf '  ✓ %s : %s\n' "$h" "$CHEMIN"
+      reussis+=("$h $CHEMIN")
+    else
+      printf '  ✗ %s : la construction a échoué (sortie ci-dessus)\n' "$h"
+      echecs=$((echecs + 1))
+    fi
+  done
+
+  # Une première construction écrit flake.lock : il est alors à enregistrer,
+  # sans quoi la suivante refusera de partir.
+  if [ "$GENRE" = flake ] && [ -n "$(non_enregistres)" ]; then
+    printf '\nLa construction a créé des fichiers à enregistrer :\n'
+    non_enregistres | sed 's/^/  /'
+    printf '  git -C %s add -- %s\n' "$DEPOT" "$(relatif_au_depot)"
+  fi
+  # Une entrée ajoutée au flake se verrouille à la construction : flake.lock
+  # change alors sans qu'on l'ait touché, et c'est à relire avant de committer.
+  if [ "$GENRE" = flake ] && [ -n "$DEPOT" ] \
+    && ! git -C "$CONF" diff --quiet -- flake.lock 2> /dev/null; then
+    printf '\nflake.lock a changé — à relire : git -C %s diff -- %s/flake.lock\n' \
+      "$DEPOT" "$(relatif_au_depot)"
+  fi
+
+  printf '\nRien n'"'"'a été appliqué ni déposé.\n'
+  if [ "${#IMPUR[@]}" -gt 0 ]; then
+    printf 'Évaluation impure : la configuration lit hors de son dépôt (%s).\n' "$etc"
+  fi
+  if [ "${#reussis[@]}" -gt 0 ]; then
+    h="${reussis[0]%% *}"
+    chemin="${reussis[0]#* }"
+    printf 'Ce qui changerait : %s ecart %s\n' "$moi" "$chemin"
+    if [ "$h" = - ]; then
+      printf 'Pour appliquer     : %s proposer\n' "$moi"
+    else
+      printf 'Pour appliquer     : %s proposer %s\n' "$moi" "$h"
+    fi
+  fi
+  [ "$echecs" -eq 0 ] || exit "$INVALIDE"
+}
+
+cmd_option() {
+  local chemin="${1:-}" valeur
+  [ -n "$chemin" ] || usage
+  exiger_conf
+  choisir_hote "${2:-}" || exit "$USAGE"
+  evaluer "options.$chemin" '
+    o:
+    let
+      texte = d: if builtins.isString d then d else (d.text or "");
+      liste = l: builtins.concatStringsSep "\n              " (map toString l);
+    in
+    if (o._type or null) == "option" then
+      "option      : '"$chemin"'\n"
+      + "type        : ${o.type.description or "?"}\n"
+      + "défaut      : ${texte (o.defaultText or "(voir la valeur)")}\n"
+      + "déclarée    : ${liste (o.declarations or [ ])}\n"
+      + "description : ${texte (o.description or "")}\n"
+    else
+      "ensemble d options sous '"$chemin"' :\n  "
+      + builtins.concatStringsSep "\n  " (builtins.attrNames o) + "\n"
+  ' || {
+    erreur "« $chemin » n'est pas une option de cette configuration (révision de nixpkgs qu'elle épingle)."
+    exit "$INVALIDE"
+  }
+  if valeur="$(evaluer "config.$chemin" 'v: if builtins.isFunction v then "<fonction>" else builtins.toJSON v' 2> /dev/null)"; then
+    printf 'valeur      : %s\n' "$valeur"
+  fi
+}
+
+cmd_paquet() {
+  local attr="${1:-}"
+  [ -n "$attr" ] || usage
+  exiger_conf
+  choisir_hote "${2:-}" || exit "$USAGE"
+  # La version de NixOS vient de la configuration, et non de pkgs.lib.version :
+  # une source nixpkgs prise à GitHub n'a pas de suffixe de version, et rendait
+  # « 25.05pre-git » (mesuré le 2026-10-19). system.nixos.version porte la date
+  # et la révision, comme nixos-version.
+  evaluer "" '
+    c:
+    let pkgs = c.pkgs; p = pkgs.'"$attr"'; in
+    "paquet      : '"$attr"'\n"
+    + "nom         : ${p.name or "?"}\n"
+    + "version     : ${p.version or "?"}\n"
+    + "binaire     : ${p.meta.mainProgram or "?"}\n"
+    + "libre       : ${if (p.meta.unfree or false) then "non (unfree)" else "oui"}\n"
+    + "description : ${p.meta.description or ""}\n"
+    + "nixos       : ${c.config.system.nixos.version}\n"
+  ' || {
+    erreur "« $attr » est absent des paquets que cette configuration voit — overlays compris."
+    exit "$INVALIDE"
+  }
+}
+
+cmd_ecart() {
+  local chemin="${1:-}"
+  [ -n "$chemin" ] || usage
+  if [ ! -e "$chemin" ]; then
+    erreur "« $chemin » n'existe plus dans le store : rien ne l'enracine, le ramasse-miettes
+         a pu l'emporter. Relancer « $moi verifier » en donne un neuf."
+    exit "$USAGE"
+  fi
+  if command -v nvd > /dev/null 2>&1; then
+    nvd diff "$systeme_actuel" "$chemin"
+  else
+    nix "${NIXF[@]}" store diff-closures "$systeme_actuel" "$chemin"
+  fi
+}
+
+cmd_lints() {
+  local fichiers=() f racine signale=0
+  exiger_conf
+  if [ "$#" -gt 0 ]; then
+    for f in "$@"; do fichiers+=("$(readlink -f "$f")"); done
+  elif [ -n "$DEPOT" ]; then
+    # Les fichiers que ce travail a touchés, pas tout le dépôt : un dépôt qui
+    # n'a jamais été passé à ces outils signalerait tout, et le signal utile s'y
+    # noierait.
+    while IFS= read -r f; do
+      [ -n "$f" ] && [ -f "$CONF/$f" ] && fichiers+=("$CONF/$f")
+    done < <(
+      {
+        if git -C "$CONF" rev-parse -q --verify HEAD > /dev/null; then
+          git -C "$CONF" diff --name-only --relative HEAD -- '*.nix'
+        else
+          git -C "$CONF" ls-files -- '*.nix'
+        fi
+        git -C "$CONF" ls-files --others --exclude-standard -- '*.nix'
+      } | sort -u
+    )
+  else
+    mapfile -t fichiers < <(find "$CONF" -name '*.nix' -type f | sort)
+  fi
+
+  if [ "${#fichiers[@]}" -eq 0 ]; then
+    printf 'Aucun fichier .nix modifié depuis le dernier commit.\n'
+    exit "$SUCCES"
+  fi
+  printf 'Fichiers relus :\n'
+  printf '  %s\n' "${fichiers[@]}"
+
+  # Depuis la racine du dépôt : c'est là que vivent statix.toml et ses pareils.
+  racine="${DEPOT:-$CONF}"
+  cd "$racine" || exit "$USAGE"
+
+  if command -v nixfmt > /dev/null 2>&1; then
+    printf '\n== nixfmt --check\n'
+    nixfmt --check "${fichiers[@]}" || signale=1
+  else
+    printf '\n== nixfmt : absent — sans l installer : nix shell nixpkgs#nixfmt -c nixfmt --check <fichiers>\n'
+  fi
+  if command -v statix > /dev/null 2>&1; then
+    printf '\n== statix check\n'
+    for f in "${fichiers[@]}"; do statix check "$f" || signale=1; done
+  else
+    printf '\n== statix : absent — sans l installer : nix shell nixpkgs#statix -c statix check <fichier>\n'
+  fi
+  # -l : les noms d'arguments d'une lambda à motif (« final: prev: » d'un
+  # overlay) ne sont pas des liaisons mortes.
+  if command -v deadnix > /dev/null 2>&1; then
+    printf '\n== deadnix --fail -l\n'
+    deadnix --fail -l "${fichiers[@]}" || signale=1
+  else
+    printf '\n== deadnix : absent — sans l installer : nix shell nixpkgs#deadnix -c deadnix -l <fichiers>\n'
+  fi
+  [ "$signale" -eq 0 ] || exit "$INVALIDE"
+}
+
+cmd_proposer() {
+  local prefixe="" nu_depot impur=""
+  exiger_conf
+  choisir_hote "${1:-}" || exit "$USAGE"
+  [ "${#IMPUR[@]}" -gt 0 ] && impur=" --impure"
+
+  printf "À proposer à l'utilisateur, qui les lance lui-même dans son terminal :\n\n"
+
+  if [ "$GENRE" = flake ] && [ -n "$(non_enregistres)" ]; then
+    printf '  git -C %s add -- %s\n' "$DEPOT" "$(relatif_au_depot)"
+  fi
+
+  if [ "$GENRE" = classique ]; then
+    if [ "$CONF" = "$(cd "$etc" 2> /dev/null && pwd)" ]; then
+      printf '  sudo nixos-rebuild switch\n'
+    else
+      printf '  sudo nixos-rebuild switch -I nixos-config=%s/configuration.nix\n' "$CONF"
+    fi
+  elif [ "$(basename "$CONF")" = conf-nixos ] && [ -f "$CONF/nixos-up" ] \
+    && command -v nixos-up > /dev/null 2>&1; then
+    # La disposition du dépôt nixos-config : nixos-up dépose dans /etc/nixos,
+    # puis on applique depuis là. Elle porte son dépôt en dur — s'il n'est pas
+    # celui-ci, elle déposerait l'autre.
+    nu_depot="$(depot_nixos_up)"
+    if [ -n "$nu_depot" ] && [ "$(readlink -f "$nu_depot")" != "$(readlink -f "$DEPOT")" ]; then
+      printf '  # ⚠ la commande nixos-up installée dépose %s, pas ce dépôt\n' "$nu_depot"
+      prefixe="NIXOS_UP_DEPOT=$DEPOT "
+    fi
+    printf '  %snixos-up %s\n' "$prefixe" "$HOTE"
+    printf '  sudo nixos-rebuild switch --impure --flake %s#%s\n' "$etc" "$HOTE"
+  else
+    # Sur un NixOS fraîchement installé, les flakes ne sont pas encore activés :
+    # NIX_CONFIG les active pour cette commande, le temps que la configuration
+    # les déclare (nix.settings.experimental-features).
+    flakes_actives || prefixe="NIX_CONFIG='experimental-features = nix-command flakes' "
+    printf '  sudo %snixos-rebuild switch%s --flake %s#%s\n' "$prefixe" "$impur" "$CONF" "$HOTE"
+  fi
+
+  cat << 'FIN'
+
+Revenir en arrière, si besoin : redémarrer et choisir la génération précédente
+dans le menu de démarrage, ou « sudo nixos-rebuild switch --rollback ».
+FIN
+}
+
+cmd_adopter() {
+  local dest="${1:-}" hote="${2:-}" f version canal systeme illisibles=() restes
+  [ -n "$dest" ] || usage
+
+  if [ ! -f "$etc/configuration.nix" ] && [ ! -f "$etc/flake.nix" ]; then
+    erreur "ni configuration.nix ni flake.nix dans $etc : rien à adopter."
+    exit "$USAGE"
+  fi
+  if [ -e "$dest" ] && [ -n "$(ls -A "$dest" 2> /dev/null)" ]; then
+    erreur "« $dest » existe et n'est pas vide : rien n'a été écrit."
+    exit "$USAGE"
+  fi
+  if [ ! -f "$etc/flake.nix" ]; then
+    if [ -z "$hote" ]; then
+      erreur "préciser le nom de la configuration à créer (le nom de la machine est $(uname -n)) :
+         $moi adopter $dest <hôte>"
+      exit "$USAGE"
+    fi
+    if ! [[ "$hote" =~ ^[A-Za-z0-9][A-Za-z0-9_-]*$ ]]; then
+      erreur "« $hote » n'est pas un nom de configuration valide (lettres, chiffres, - et _)."
+      exit "$USAGE"
+    fi
+  fi
+
+  mkdir -p "$dest"
+  dest="$(cd "$dest" && pwd)"
+
+  # Tout sauf la description matérielle : elle décrit ce poste et lui seul, et
+  # reste à son emplacement système, d'où la configuration l'importera. cp et
+  # non install : les copies appartiennent à qui édite, pas à root.
+  while IFS= read -r -d '' f; do
+    f="${f#./}"
+    mkdir -p "$dest/$(dirname "$f")"
+    cp "$etc/$f" "$dest/$f" 2> /dev/null || illisibles+=("$f")
+  done < <(cd "$etc" && find . -type f ! -name hardware-configuration.nix ! -path './.git/*' -print0)
+
+  if [ -f "$dest/configuration.nix" ]; then
+    sed -i 's#\./hardware-configuration\.nix#/etc/nixos/hardware-configuration.nix#g' "$dest/configuration.nix"
+  fi
+
+  if [ ! -f "$dest/flake.nix" ]; then
+    version="$(version_nixos)"
+    canal="nixos-$(printf '%s' "$version" | cut -d. -f1,2)"
+    systeme="$(uname -m)-linux"
+    sed -e "s#@HOTE@#$hote#g" -e "s#@CANAL@#$canal#g" -e "s#@SYSTEME@#$systeme#g" \
+      "$modeles/flake.nix" > "$dest/flake.nix"
+  fi
+
+  git -C "$dest" init -q
+  git -C "$dest" add -A
+
+  printf 'Configuration adoptée dans %s — %s n'"'"'a pas été modifié.\n' "$dest" "$etc"
+  printf '  copiés : %s fichier(s)\n' "$(git -C "$dest" ls-files | grep -c .)"
+  printf '  laissé en place : %s/hardware-configuration.nix, importé par son chemin absolu\n' "$etc"
+  if [ "${#illisibles[@]}" -gt 0 ]; then
+    printf '  ⚠ illisibles sans privilège, NON copiés :\n'
+    printf '      %s\n' "${illisibles[@]}"
+  fi
+
+  restes="$(grep -rnE --include='*.nix' '^[^#]*<[A-Za-z0-9_-]+(/[^>]*)?>' "$dest" 2> /dev/null)"
+  if [ -n "$restes" ]; then
+    printf '  ⚠ imports par canal (<…>), qu un flake ne résout pas : à convertir en entrées du flake\n'
+    printf '%s\n' "$restes" | sed 's/^/      /'
+  fi
+  restes="$(grep -rnE --include='*.nix' '^[^#]*hardware-configuration\.nix' "$dest" 2> /dev/null \
+    | grep -v '/etc/nixos/hardware-configuration\.nix')"
+  if [ -n "$restes" ]; then
+    printf '  ⚠ références relatives à la description matérielle, à pointer vers /etc/nixos :\n'
+    printf '%s\n' "$restes" | sed 's/^/      /'
+  fi
+
+  mkdir -p "$(dirname "$fichier_choix")"
+  printf '%s\n' "$dest" > "$fichier_choix"
+  printf '  retenue comme configuration de ce poste (%s)\n' "$fichier_choix"
+
+  cat << FIN
+
+Les fichiers sont enregistrés (git add), pas commités. Ensuite :
+  $moi verifier${hote:+ $hote}     la première construction télécharge nixpkgs
+  $moi proposer${hote:+ $hote}     la commande qui appliquera
+FIN
+}
+
+# ---------------------------------------------------------------------------
+# AIGUILLAGE
+# ---------------------------------------------------------------------------
+[ "$#" -gt 0 ] || usage
+sous_commande="$1"
+shift
+case "$sous_commande" in
+  localiser) cmd_localiser "$@" ;;
+  choisir) cmd_choisir "$@" ;;
+  hotes) cmd_hotes "$@" ;;
+  verifier) cmd_verifier "$@" ;;
+  option) cmd_option "$@" ;;
+  paquet) cmd_paquet "$@" ;;
+  ecart) cmd_ecart "$@" ;;
+  lints) cmd_lints "$@" ;;
+  proposer) cmd_proposer "$@" ;;
+  adopter) cmd_adopter "$@" ;;
+  -h | --help | aide) usage ;;
+  *)
+    erreur "sous-commande inconnue : $sous_commande"
+    usage
+    ;;
+esac

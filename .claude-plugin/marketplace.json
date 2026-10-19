@@ -1,0 +1,14 @@
+{
+  "name": "plugin-nixos",
+  "description": "Marketplace locale de plugin-nixos, pour l'essayer depuis une copie du dépôt.",
+  "owner": {
+    "name": "Soon"
+  },
+  "plugins": [
+    {
+      "name": "plugin-nixos",
+      "source": "./",
+      "description": "Gérer la configuration NixOS d'un poste : trouver, prouver, vérifier sans privilège, proposer sans appliquer."
+    }
+  ]
+}

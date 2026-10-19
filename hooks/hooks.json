@@ -1,0 +1,17 @@
+{
+  "description": "Garde NixOS : refuse d'activer une configuration, d'installer un paquet hors de la configuration et de détruire des générations.",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash|Monitor",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/garde-nixos.sh\"",
+            "timeout": 15
+          }
+        ]
+      }
+    ]
+  }
+}
