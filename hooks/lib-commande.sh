@@ -2,13 +2,14 @@
 # Aide du garde de commandes — sourcée, jamais exécutée.
 #
 # Reprise de la bibliothèque du dépôt nixos-config (plugin/hooks/lib-commande.sh,
-# 2026-10-15), avec trois écarts, chacun motivé là où il est écrit :
+# 2026-10-15), avec quatre écarts, chacun motivé là où il est écrit :
 #
 #   lire_commande   ne dépend plus de jq : un NixOS fraîchement installé n'en a
 #                   pas, et c'est précisément là que ce plugin doit servir ;
 #   lire_commande   juge aussi l'outil Monitor, qui lance une commande comme Bash ;
 #   executeur       « nix run », « nix shell » et « nix develop » lancent ce
-#                   qu'on leur passe, comme « nix-shell --run ».
+#                   qu'on leur passe, comme « nix-shell --run » ;
+#   executeur       run0, pkexec, systemd-run, flock, chroot, tmux… aussi.
 #
 # Et une correction : chaque test passe le texte à grep par une here-string, et
 # non par « printf | grep -q ». grep -q s'arrête au premier résultat ; sur un
@@ -213,11 +214,24 @@ segments_resolus() {
 #
 # « nix » ne l'est qu'avec run, shell ou develop : « nix eval
 # nixpkgs#nixos-rebuild.version » lit un attribut, il ne lance rien.
+#
+# La liste de nixos-config s'arrêtait à la première clause. Les suivantes
+# laissaient toutes passer « nixos-rebuild switch », ici comme là-bas (mesuré le
+# 2026-10-19, sur les dix-neuf présentes sur le poste de mesure) — run0 et
+# pkexec en tête, qui élèvent sans sudo.
 executeur() {
   case "$1" in
     eval | sh | bash | zsh | dash | ksh | xargs | sudo | doas | watch | timeout | script | setsid | nice | ionice | stdbuf | su | ssh | nix-shell | parallel)
       return 0
       ;;
+    # Élèvent par polkit ou changent d'identité.
+    run0 | pkexec | systemd-run | runuser | setpriv | capsh | sg) return 0 ;;
+    # Isolent : la commande tourne quand même, ailleurs.
+    chroot | unshare | nsenter | systemd-nspawn | bwrap | firejail | steam-run | busybox) return 0 ;;
+    # Ajustent un réglage, puis lancent.
+    flock | taskset | chrt | prlimit | setarch | systemd-inhibit | strace | ltrace | fakeroot | faketime) return 0 ;;
+    # Lancent dans un autre terminal.
+    tmux | screen) return 0 ;;
     nix)
       grep -Eq '(^|[[:space:]])(run|shell|develop)([[:space:]]|$)' <<< "$2"
       ;;

@@ -79,6 +79,17 @@ while IFS= read -r installation; do
   attendre "« $installation » porte le nom du plugin" '[ "${installation#install }" = "$nom_plugin@soon" ]'
 done < <(grep -ohE 'install [a-z0-9-]+@soon' "$RACINE"/README.md | sort -u)
 
+echo "# la première session d'un poste neuf"
+# « nixpkgs#claude-code » suit le registre du poste, qui peut désigner le canal
+# stable — et nixpkgs 25.05 fournit claude-code 1.0.85, qui n'a pas de
+# commande « plugin » (mesuré le 2026-10-19). Le README le prend donc à la
+# révision que le lanceur MCP épingle déjà : une seule révision à télécharger,
+# et à faire avancer.
+revision=$(sed -n 's/^readonly REVISION="\([0-9a-f]*\)"$/\1/p' "$RACINE/scripts/mcp-nixos.sh")
+attendre "le lanceur MCP épingle une révision ($revision)" '[[ "$revision" =~ ^[0-9a-f]{40}$ ]]'
+attendre "le README prend claude-code à cette révision" 'grep -q "github:NixOS/nixpkgs/$revision" "$RACINE/README.md"'
+attendre "le README ne prend pas claude-code au registre du poste" '! grep -q "nixpkgs#claude-code" "$RACINE/README.md"'
+
 echo "# scripts"
 for script in "$RACINE"/hooks/*.sh "$RACINE"/scripts/* "$RACINE"/tests/*.sh; do
   attendre "syntaxe bash : ${script#"$RACINE"/}" 'bash -n "$script"'

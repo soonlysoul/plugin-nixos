@@ -10,7 +10,7 @@ configuration et de détruire des générations.
 Rien n'y est propre à une machine. Installé sur un PC neuf, il sert tout de
 suite, sans `jq`, sans flakes activés et sans `mcp-nixos` déclaré.
 
-Version **0.1.0**. Testé avec Claude Code 2.1.296 sur NixOS 25.05.
+Version **0.1.1**. Testé avec Claude Code 2.1.296 sur NixOS 25.05.
 
 ## Ce qu'il apporte
 
@@ -26,16 +26,25 @@ Version **0.1.0**. Testé avec Claude Code 2.1.296 sur NixOS 25.05.
 
 ## Installer
 
-Prérequis : NixOS, Claude Code et `git`. `jq` est recommandé mais pas requis.
+Prérequis : NixOS, un Claude Code qui connaît les plugins, et `git`. `jq` est
+recommandé mais pas requis. Celui de nixpkgs 25.05 ne convient pas : c'est la
+1.0.85, qui n'a pas de commande `plugin` (mesuré le 2026-10-19).
 
 **Sur un NixOS fraîchement installé**, Claude Code et git ne sont pas encore
 déclarés. Un shell éphémère suffit pour la première session : il n'installe
 rien, et la configuration les déclarera ensuite.
 
 ```bash
+rev=github:NixOS/nixpkgs/7fd4004d0511991fff3a0524856a9be09e28c5f0
 NIXPKGS_ALLOW_UNFREE=1 nix --extra-experimental-features 'nix-command flakes' \
-  shell --impure nixpkgs#claude-code nixpkgs#git
+  shell --impure "$rev#claude-code" "$rev#git"
 ```
+
+Il fournit Claude Code 2.1.296, la version testée, pris à la révision de
+nixpkgs-unstable que le serveur MCP épingle déjà. Le raccourci `nixpkgs#…`, lui,
+suivrait le registre du poste, qui peut désigner le canal stable. claude-code
+n'étant pas libre, le cache binaire ne l'a pas : la première fois, Nix le
+construit sur place à partir du binaire publié.
 
 Puis, depuis la marketplace `soon` :
 
@@ -94,7 +103,9 @@ configurations du dépôt.
 
 Il juge une **invocation**, pas une chaîne. `grep nixos-rebuild fichier` passe,
 et un message de commit qui en parle aussi. Il couvre les chemins de traverse
-(chemin absolu, `env`, `sudo`, `sh -c`, `xargs`, variable, `nix run …#home-manager`).
+(chemin absolu, `env`, `sudo`, `sh -c`, `xargs`, variable, `nix run …#home-manager`)
+et les enveloppes qui élèvent ou lancent ailleurs (`run0`, `pkexec`,
+`systemd-run`, `flock`, `chroot`, `tmux`…).
 Il ne prétend pas arrêter une intention : il protège d'un geste distrait. Il ne
 porte aucun refus générique (`rm -rf`, `sudo` seul, `git push --force`) : il
 tourne dans toutes les sessions, et ces règles-là appartiennent aux projets qui

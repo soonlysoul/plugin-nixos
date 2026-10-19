@@ -67,7 +67,7 @@ La description matérielle n'entre jamais dans le dépôt. Elle porte les
 identifiants de disques du poste, et c'est la règle de `nixos-config` que ce
 plugin garde. `adopter` la laisse donc dans `/etc/nixos` et en réécrit l'import.
 
-## Le garde : repris, élargi, et deux défauts corrigés
+## Le garde : repris, élargi, et trois défauts corrigés
 
 `hooks/lib-commande.sh` et `hooks/garde-nixos.sh` reprennent ceux de
 `nixos-config`. Le garde juge une invocation, pas une chaîne, couvre les seize
@@ -107,6 +107,15 @@ montrait une durée de plus de deux minutes, au-delà du délai du hook, où la
 commande passe sans avoir été jugée. La commande est désormais découpée **une**
 fois, et non une fois par outil : 1,6 s.
 
+**Défaut 3 — des enveloppes laissaient passer.** La liste des exécuteurs
+s'arrêtait à `sudo`, `sh -c`, `xargs`, `timeout`… Sur les dix-neuf autres
+enveloppes présentes sur le poste de mesure, toutes laissaient passer
+`nixos-rebuild switch`, ici comme dans `nixos-config` (mesuré le 2026-10-19) :
+`run0` et `pkexec` en tête, qui élèvent par polkit sans `sudo`, puis
+`systemd-run`, `flock`, `chroot`, `setpriv`, `tmux`… Elles sont désormais des
+exécuteurs : le segment qu'elles lancent est jugé comme s'il était nu, et
+`systemd-run --user nixos-rebuild build` passe toujours.
+
 **Monitor est jugé.** Son champ `command` est une commande shell, lancée en
 arrière-plan, mais lancée.
 
@@ -138,14 +147,23 @@ signale.
 Démarrage mesuré ensuite : 5 à 16 s sur un poste à charge 21, à mesure que les
 caches se remplissent.
 
-## Compatible avec le Claude Code de nixpkgs stable
+## Le Claude Code d'un poste neuf
 
-Un PC neuf a le `claude-code` de son canal stable. `nixos-config` mesurait 2.1.223
-en 26.05 le 2026-09-20, en retard sur la série courante. `hooks/hooks.json` s'en
-tient donc à la forme la plus ancienne, une chaîne `command`, sans `args` ni
-`onFailure`, et `tests/test_statique.sh` l'impose. Hypothèse, non mesurée : ces
-champs récents seraient refusés ou ignorés par une version plus ancienne. La
-forme ancienne, elle, fonctionne partout.
+Celui des canaux stables est en retard, et celui de la 25.05 ne sert à rien ici.
+Mesuré le 2026-10-19 : nixpkgs 25.05 fournit claude-code 1.0.85, qui n'a pas de
+commande `plugin`. Elle prend `plugin validate` pour une question à envoyer au
+modèle. La 26.05 fournit la 2.1.223. Le README prend donc la première session
+à la révision de nixpkgs-unstable que le lanceur MCP épingle déjà, soit la
+2.1.296, la version testée. `tests/test_statique.sh` vérifie que les deux
+révisions restent la même. Le cache binaire n'a pas claude-code, qui n'est pas
+libre (vérifié le même jour) : Nix le construit sur place, à partir du binaire
+publié.
+
+Un poste en 26.05 peut ensuite déclarer le claude-code de son canal.
+`hooks/hooks.json` s'en tient donc à la forme la plus ancienne, une chaîne
+`command`, sans `args` ni `onFailure`, et `tests/test_statique.sh` l'impose. Le
+validateur de la 2.1.223 accepte ces champs récents (mesuré), mais ce qu'il en
+fait à l'exécution ne l'est pas. La forme ancienne, elle, fonctionne partout.
 
 ## Ce qui a été écarté, et pour quelle raison propre
 
