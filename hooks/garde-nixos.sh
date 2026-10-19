@@ -8,13 +8,17 @@
 #                           switch-to-configuration, nh os switch|boot|test|rollback,
 #                           nixos-install, nixos-generate-config qui écrit,
 #                           nixos-up sans --verifier (l'outil du dépôt nixos-config)
-#   activer l'utilisateur   home-manager switch, nh home switch
+#   activer l'utilisateur   home-manager switch|init|uninstall, nh home switch
 #   installer impérativement  nix-env -i/-u/-e…, nix profile install|add|remove|upgrade
 #                           — un paquet posé ainsi survit à tous les rebuilds sans
 #                           figurer nulle part dans la configuration
 #   détruire des générations  nix-collect-garbage, nix store gc|delete,
 #                           nix-store --gc|--delete, nh clean,
-#                           nix-env --delete-generations, nix profile wipe-history
+#                           nix-env --delete-generations, nix profile wipe-history,
+#                           home-manager expire-generations|remove-generations
+#
+# nixos-rebuild, nh et home-manager sont jugés sur LISTE BLANCHE : une
+# sous-commande inconnue ou masquée (« sw\itch ») est refusée.
 #
 # CE QU'IL LAISSE PASSER, ET C'EST DÉLIBÉRÉ. Construire sans activer —
 # « nixos-rebuild build », « nh os build », « nix build » — n'élève rien et ne
@@ -174,8 +178,10 @@ if invoque 'nixos-up'; then
   fi
 fi
 
-# nh — l'enveloppe de nixos-rebuild et de home-manager. « nh search » ne fait
-# que chercher : ses arguments sont des mots quelconques, jamais jugés.
+# nh — l'enveloppe de nixos-rebuild et de home-manager. Liste blanche, comme
+# nixos-rebuild : la liste noire d'avant laissait passer « nh os sw\itch »
+# (mesuré le 2026-10-19). « nh search » ne fait que chercher : ses arguments
+# sont des mots quelconques, jamais jugés.
 if invoque 'nh'; then
   _vu=0
   while IFS= read -r _seg; do
@@ -186,24 +192,38 @@ if invoque 'nh'; then
        Pour construire sans activer : nh os build"
     fi
     mot_parmi "$_seg" 'clean' && refuser "nh clean détruit des générations."
+    grep -Eq '(^|[^A-Za-z0-9_.-])(os|home|darwin)[[:space:]]+(build|build-vm|repl|info)([^A-Za-z0-9_.-]|$)' <<< "$_seg" \
+      || mot_parmi "$_seg" '--help|-h|--version|-V|completions' \
+      || refuser "nh sans sous-commande de construction reconnue.
+       Ne passent que os, home ou darwin suivis de build, build-vm, repl ou info ;
+       search ; et --help."
   done < <(segments_invoquant 'nh')
   [ "$_vu" -eq 1 ] || refuser "nh invoqué de façon indirecte : la sous-commande ne peut pas être jugée."
 fi
 
-# ─── Activer l'environnement utilisateur ──────────────────────────────────────
-# Seule la sous-commande qui ACTIVE est refusée : « home-manager generations »,
-# « build » ou « packages » lisent.
+# ─── Activer ou détruire l'environnement utilisateur ──────────────────────────
+# Liste blanche, comme nixos-rebuild. La liste noire d'avant ne refusait que
+# switch : expire-generations, remove-generations et uninstall, qui détruisent,
+# passaient, et « sw\itch » aussi (mesuré le 2026-10-19). Ne passe que ce qui
+# lit ou construit sans activer.
 if invoque 'home-manager'; then
   _vu=0
-  _sur=0
   while IFS= read -r _seg; do
     _vu=1
-    mot_parmi "$_seg" 'switch' && _sur=1
-  done < <(segments_invoquant 'home-manager')
-  if [ "$_sur" -eq 1 ] || [ "$_vu" -eq 0 ]; then
-    refuser "home-manager switch active une génération.
+    if mot_parmi "$_seg" 'switch'; then
+      refuser "home-manager switch active une génération.
        Pour PROUVER qu'une configuration tient : home-manager build"
-  fi
+    fi
+    if mot_parmi "$_seg" 'expire-generations|remove-generations|uninstall'; then
+      refuser "home-manager détruit des générations, ou se désinstalle.
+       Le nettoyage se déclare dans la configuration (nix.gc.automatic)."
+    fi
+    mot_parmi "$_seg" 'build|instantiate|generations|packages|news|option|help|--help|-h|--version' \
+      || refuser "home-manager sans sous-commande de lecture reconnue.
+       Ne passent que build, instantiate, generations, packages, news, option
+       et --help."
+  done < <(segments_invoquant 'home-manager')
+  [ "$_vu" -eq 1 ] || refuser "home-manager invoqué de façon indirecte : la sous-commande ne peut pas être jugée."
 fi
 
 # ─── Installer impérativement, détruire des générations ───────────────────────

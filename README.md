@@ -10,7 +10,7 @@ configuration et de détruire des générations.
 Rien n'y est propre à une machine. Installé sur un PC neuf, il sert tout de
 suite, sans `jq`, sans flakes activés et sans `mcp-nixos` déclaré.
 
-Version **0.1.1**. Testé avec Claude Code 2.1.296 sur NixOS 25.05.
+Version **0.1.2**. Testé avec Claude Code 2.1.296 sur NixOS 25.05.
 
 ## Ce qu'il apporte
 
@@ -97,9 +97,13 @@ configurations du dépôt.
 | Famille | Commandes refusées | Ce qui reste libre |
 | --- | --- | --- |
 | Activer le système | `nixos-rebuild switch\|boot\|test\|dry-activate`, `switch-to-configuration`, `nh os switch\|boot\|test`, `nixos-install`, `nixos-generate-config` qui écrit, `nixos-up` sans `--verifier` | `nixos-rebuild build`, `dry-build`, `build-vm`, `list-generations` ; `nh os build` ; `nix build` |
-| Activer l'utilisateur | `home-manager switch`, `nh home switch` | `home-manager build`, `generations` |
+| Activer l'utilisateur | `home-manager switch\|init\|uninstall`, `nh home switch` | `home-manager build`, `instantiate`, `generations`, `packages`, `news`, `option` ; `nh home build` |
 | Installer hors configuration | `nix-env -i/-u/-e…`, `nix profile install\|add\|remove\|upgrade` | `nix-env -q`, `nix profile list`, `nix shell nixpkgs#x -c …` |
-| Détruire des générations | `nix-collect-garbage`, `nix store gc\|delete`, `nix-store --gc\|--delete`, `nh clean`, `nix-env --delete-generations` | `nix store diff-closures`, `nix-store -q` |
+| Détruire des générations | `nix-collect-garbage`, `nix store gc\|delete`, `nix-store --gc\|--delete`, `nh clean`, `nix-env --delete-generations`, `home-manager expire-generations\|remove-generations` | `nix store diff-closures`, `nix-store -q` |
+
+`nixos-rebuild`, `nh` et `home-manager` sont jugés sur liste blanche : une
+sous-commande absente de la colonne de droite, ou masquée (`sw\itch`), est
+refusée.
 
 Il juge une **invocation**, pas une chaîne. `grep nixos-rebuild fichier` passe,
 et un message de commit qui en parle aussi. Il couvre les chemins de traverse

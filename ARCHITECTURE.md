@@ -67,7 +67,7 @@ La description matérielle n'entre jamais dans le dépôt. Elle porte les
 identifiants de disques du poste, et c'est la règle de `nixos-config` que ce
 plugin garde. `adopter` la laisse donc dans `/etc/nixos` et en réécrit l'import.
 
-## Le garde : repris, élargi, et trois défauts corrigés
+## Le garde : repris, élargi, et quatre défauts corrigés
 
 `hooks/lib-commande.sh` et `hooks/garde-nixos.sh` reprennent ceux de
 `nixos-config`. Le garde juge une invocation, pas une chaîne, couvre les seize
@@ -115,6 +115,13 @@ enveloppes présentes sur le poste de mesure, toutes laissaient passer
 `systemd-run`, `flock`, `chroot`, `setpriv`, `tmux`… Elles sont désormais des
 exécuteurs : le segment qu'elles lancent est jugé comme s'il était nu, et
 `systemd-run --user nixos-rebuild build` passe toujours.
+
+**Défaut 4 — home-manager et nh étaient sur liste noire.** Seul `switch` était
+refusé. `home-manager expire-generations`, `remove-generations` et `uninstall`
+passaient alors qu'ils détruisent, et `home-manager sw\itch` ou `nh os sw\itch`
+aussi : le shell ôte l'antislash, le garde ne le voyait pas (mesuré le
+2026-10-19). Les deux sont jugés désormais comme `nixos-rebuild` : ne passe que
+ce qui lit ou construit, et tout le reste est refusé.
 
 **Monitor est jugé.** Son champ `command` est une commande shell, lancée en
 arrière-plan, mais lancée.

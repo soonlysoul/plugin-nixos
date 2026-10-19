@@ -1,5 +1,12 @@
 # Journal des versions
 
+## 0.1.2 — 2026-10-19
+
+- `home-manager` et `nh` sont jugés sur liste blanche, comme `nixos-rebuild`.
+  `home-manager expire-generations`, `remove-generations`, `uninstall` et
+  `init` sont refusés, ainsi que toute sous-commande masquée (`sw\itch`) ou
+  inconnue. Seul `switch` l'était avant.
+
 ## 0.1.1 — 2026-10-19
 
 - Le garde refuse aussi `nixos-rebuild switch` (et les autres gestes gardés)

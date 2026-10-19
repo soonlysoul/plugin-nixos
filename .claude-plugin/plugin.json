@@ -1,6 +1,6 @@
 {
   "name": "plugin-nixos",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Gérer la configuration NixOS d'un poste depuis Claude Code : la trouver ou la reprendre de /etc/nixos dans un dépôt git, prouver une option avant de l'écrire, vérifier sans privilège, et s'arrêter sur la commande à lancer soi-même. Un garde refuse d'activer, d'installer impérativement et de détruire des générations.",
   "author": {
     "name": "Soon"
