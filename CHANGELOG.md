@@ -1,6 +1,6 @@
 # Journal des versions
 
-## [à venir] — en cours
+## [0.2.0] — 2026-10-20
 
 Réécrit au modèle de plugin-flutter par plugin-plugin, depuis 0.1.2 : mêmes
 skills, même garde, même serveur MCP, et chaque cas des suites d'origine garde
@@ -17,6 +17,8 @@ son équivalent.
   `tests/static/`, avec les contrôles d'en-têtes, de manifeste, de chemins et
   du serveur MCP.
 - `PROGRESS.md` et `docs/` : installation, usage, sécurité, dépannage.
+
+Coût en contexte permanent : ~1126 tokens — installe ~300, modifie ~270, verifie ~280, cherche ~280.
 
 ## [0.1.2] — 2026-10-19
 
