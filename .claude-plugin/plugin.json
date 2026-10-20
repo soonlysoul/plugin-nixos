@@ -8,5 +8,11 @@
   "homepage": "https://github.com/soonlysoul/plugin-nixos",
   "repository": "https://github.com/soonlysoul/plugin-nixos",
   "license": "MIT",
-  "keywords": ["nixos", "nix", "flake", "configuration", "francais"]
+  "keywords": [
+    "nixos",
+    "nix",
+    "flake",
+    "configuration",
+    "francais"
+  ]
 }

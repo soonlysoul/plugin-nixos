@@ -1,91 +1,101 @@
-#!/usr/bin/env bash
-# Les variables posées ici sont lues par les conditions que « attendre » évalue,
-# et par les suites qui sourcent lib.sh : shellcheck ne suit ni l'un ni l'autre.
-# shellcheck disable=SC2034
-# Aides communes aux suites : bash + jq, sans réseau, sans session Claude.
-# Sourcer depuis une suite, poser SUITE, appeler les assertions, finir par terminer.
+# shellcheck shell=bash disable=SC2034  # variables set here are read by the sourcing test
+# Shared helpers for the deterministic test suite: bash + jq, no network, no Claude session.
+# Source it from a test file, set SUITE, call the assertions, end with `finish`.
 
-# NIXOS_PLUGIN_RACINE fait juger une copie modifiée du plugin — c'est ainsi qu'on
-# vérifie qu'un test discrimine : un garde qui laisse tout passer doit faire
-# échouer les « refuse ».
-RACINE=${NIXOS_PLUGIN_RACINE:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}
-GARDE="$RACINE/hooks/garde-nixos.sh"
-NIXCONF="$RACINE/scripts/nixconf"
-OK=0
-KO=0
-SAUTE=0
+# PLUGIN_UNDER_TEST points a test at a mutated copy of the plugin, to prove it fails there.
+PLUGIN_ROOT=${PLUGIN_UNDER_TEST:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}
+SCRIPTS="$PLUGIN_ROOT/hooks/scripts"
+PASS=0 FAIL=0 SKIP=0
 
-# Une suite ne dépend pas de la session qui la lance.
-unset CLAUDE_PROJECT_DIR CLAUDE_PLUGIN_ROOT CLAUDE_PLUGIN_DATA NIXOS_CONF NIX_CONFIG
+# The suite must not depend on the session it runs from.
+unset CLAUDE_PROJECT_DIR CLAUDE_PLUGIN_ROOT CLAUDE_PLUGIN_DATA
 
-reussi() {
-  OK=$((OK + 1))
-  printf '  ok     %s\n' "$1"
+pass() { PASS=$((PASS + 1)); printf '  ok     %s\n' "$1"; }
+fail() {
+  FAIL=$((FAIL + 1)); printf '  ÉCHEC  %s\n' "$1"
+  if [[ -n ${2:-} ]]; then printf '         %s\n' "$2"; fi
 }
-echoue() {
-  KO=$((KO + 1))
-  printf '  ÉCHEC  %s\n' "$1"
-  if [ -n "${2:-}" ]; then printf '         %s\n' "$2"; fi
-}
-saute() {
-  SAUTE=$((SAUTE + 1))
-  printf '  sauté  %s (%s)\n' "$1" "$2"
+skip() { SKIP=$((SKIP + 1)); printf '  sauté  %s (%s)\n' "$1" "$2"; }
+
+# run_hook <script> <stdin> [env assignments...]
+# Sets HOOK_STATUS, HOOK_STDOUT and HOOK_STDERR.
+run_hook() {
+  local script=$1 input=$2 out err
+  shift 2
+  out=$(mktemp) err=$(mktemp)
+  printf '%s' "$input" | env "$@" "$BASH" "$script" >"$out" 2>"$err"
+  HOOK_STATUS=$?
+  HOOK_STDOUT=$(<"$out") HOOK_STDERR=$(<"$err")
+  rm -f "$out" "$err"
 }
 
-# L'entrée PreToolUse que Claude Code passerait au garde.
-entree_outil() {
-  jq -nc --arg c "$1" --arg t "${2:-Bash}" \
-    '{session_id: "test", hook_event_name: "PreToolUse", cwd: "/tmp",
-      tool_name: $t, tool_input: {command: $c}}'
-}
-
-# juger <commande> [outil] — pose STATUT et SORTIE (le stderr du garde).
-juger() {
-  local err
-  err=$(mktemp)
-  entree_outil "$1" "${2:-Bash}" | bash "$GARDE" 2> "$err" > /dev/null
-  STATUT=$?
-  SORTIE=$(< "$err")
-  rm -f "$err"
-}
-
-passe() {
-  juger "$1" "${2:-Bash}"
-  if [ "$STATUT" -eq 0 ]; then
-    reussi "passe   : $1"
+# expect_status <label> <expected exit code>, after run_hook.
+expect_status() {
+  if [[ $HOOK_STATUS == "$2" ]]; then
+    pass "$1"
   else
-    echoue "passe   : $1" "refusé à tort (sortie $STATUT) : ${SORTIE:0:300}"
+    fail "$1" "attendu exit $2, obtenu $HOOK_STATUS ; stderr : ${HOOK_STDERR:0:300}"
   fi
 }
 
-refuse() {
-  juger "$1" "${2:-Bash}"
-  if [ "$STATUT" -eq 2 ] && [ -n "$SORTIE" ]; then
-    reussi "refuse  : $1"
+# expect_blocked <label>: exit 2 with a reason on stderr.
+expect_blocked() {
+  if [[ $HOOK_STATUS == 2 && -n $HOOK_STDERR ]]; then
+    pass "$1"
   else
-    echoue "refuse  : $1" "laissé passer (sortie $STATUT)"
+    fail "$1" "attendu exit 2 avec une raison, obtenu exit $HOOK_STATUS ; stderr : ${HOOK_STDERR:0:300}"
   fi
 }
 
-# Un répertoire de PATH qui ne contient QUE les outils nommés : c'est ainsi
-# qu'on simule un poste où il manque jq, ou tout. Affiche le répertoire.
-chemin_restreint() {
-  local rep outil
-  rep=$(mktemp -d)
-  for outil in "$@"; do
-    if command -v "$outil" > /dev/null 2>&1; then
-      ln -s "$(command -v "$outil")" "$rep/$outil"
-    fi
+# expect_silent_allow <label>: exit 0, nothing on stdout or stderr.
+expect_silent_allow() {
+  if [[ $HOOK_STATUS == 0 && -z $HOOK_STDOUT && -z $HOOK_STDERR ]]; then
+    pass "$1"
+  else
+    fail "$1" "attendu exit 0 silencieux, obtenu exit $HOOK_STATUS ; stdout : ${HOOK_STDOUT:0:200} ; stderr : ${HOOK_STDERR:0:200}"
+  fi
+}
+
+# bash_input <command> [tool] [cwd]: PreToolUse input for a shell tool.
+bash_input() {
+  jq -nc --arg c "$1" --arg t "${2:-Bash}" --arg d "${3:-/work/proj}" \
+    '{session_id: "test", cwd: $d, hook_event_name: "PreToolUse", permission_mode: "default",
+      tool_name: $t, tool_input: {command: $c}, tool_use_id: "toolu_test"}'
+}
+
+# restricted_path <tool...>: a PATH holding only the named tools, to simulate a missing
+# dependency. Prints the directory; the caller removes it.
+restricted_path() {
+  local dir tool
+  dir=$(mktemp -d)
+  for tool in "$@"; do
+    ln -s "$(command -v "$tool")" "$dir/$tool"
   done
-  printf '%s' "$rep"
+  printf '%s' "$dir"
 }
 
-# attendre <libellé> <condition shell> — une assertion libre.
-attendre() {
-  if eval "$2"; then reussi "$1"; else echoue "$1" "condition fausse : $2"; fi
+# path_without <tool...>: a directory of links to every command of PATH except the named
+# ones, first match winning as in PATH, to simulate a missing dependency.
+# Prints the directory; the caller removes it.
+path_without() {
+  local dir entry name excluded
+  local -a dirs batch
+  dir=$(mktemp -d)
+  IFS=: read -ra dirs <<<"$PATH"
+  for entry in "${dirs[@]}"; do
+    [[ -d $entry ]] || continue
+    batch=()
+    for name in "$entry"/*; do
+      [[ -x $name && ! -d $name && ! -e $dir/${name##*/} ]] || continue
+      for excluded in "$@"; do [[ ${name##*/} == "$excluded" ]] && continue 2; done
+      batch+=("$name")
+    done
+    ((${#batch[@]} == 0)) || ln -s -t "$dir" -- "${batch[@]}" 2>/dev/null
+  done
+  printf '%s' "$dir"
 }
 
-terminer() {
-  printf '%s : %d réussis, %d échoués, %d sautés\n' "$SUITE" "$OK" "$KO" "$SAUTE"
-  [ "$KO" -eq 0 ]
+finish() {
+  printf '%s : %d réussis, %d échoués, %d sautés\n' "$SUITE" "$PASS" "$FAIL" "$SKIP"
+  [[ $FAIL == 0 ]]
 }

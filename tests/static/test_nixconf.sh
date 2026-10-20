@@ -8,9 +8,15 @@
 # répond aux évaluations et aux constructions et consigne ses arguments. Un
 # sudo piégé prouve qu'aucune sous-commande ne l'appelle, et le PATH ne contient
 # ni le nixos-up ni le jq de la machine qui lance les tests.
-# shellcheck source=lib.sh
-source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+# shellcheck source=../lib.sh
+source "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
 SUITE=test_nixconf
+# Portage au harnais du modèle (plugin-plugin, phase 14) : les cas
+# d'origine, mot pour mot, sur les aides de tests/lib.sh.
+attendre() { if eval "$2"; then pass "$1"; else fail "$1" "condition fausse : $2"; fi; }
+NIXCONF="$PLUGIN_ROOT/scripts/nixconf"
+# Une suite ne dépend pas de la configuration Nix de la session qui la lance.
+unset NIXOS_CONF NIX_CONFIG
 
 BAC=$(mktemp -d)
 FAUX="$BAC/faux"
@@ -57,7 +63,7 @@ exit 99
 EOF
 chmod +x "$FAUX"/*
 
-OUTILS=$(chemin_restreint bash git grep sed awk cut head tail sort find readlink dirname basename \
+OUTILS=$(restricted_path bash git grep sed awk cut head tail sort find readlink dirname basename \
   mktemp rm mkdir cp ls uname cat env tr wc sha256sum chmod)
 export PATH="$FAUX:$OUTILS"
 export HOME="$BAC/home"
@@ -288,4 +294,4 @@ nixconf inconnue
 attendre "sous-commande inconnue : sortie 1" '[ "$STATUT" = 1 ]'
 
 rm -rf "$BAC" "$OUTILS"
-terminer
+finish

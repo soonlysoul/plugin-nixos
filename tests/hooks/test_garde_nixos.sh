@@ -2,7 +2,7 @@
 # Les variables posées ici sont lues par les conditions que « attendre » évalue,
 # et par les suites qui sourcent lib.sh : shellcheck ne suit ni l'un ni l'autre.
 # shellcheck disable=SC2034
-# Le garde NixOS — hooks/garde-nixos.sh.
+# Le garde NixOS — hooks/scripts/garde-nixos.sh.
 #
 # Il est servi à TOUTE session de la machine. Un garde a deux façons d'échouer,
 # et posé globalement la seconde change de nature :
@@ -14,9 +14,15 @@
 #
 # Les cas repris du dépôt nixos-config (tests/gardes-nixos.bats et les seize
 # chemins de traverse de tests/gardes.bats) y gardent leur formulation.
-# shellcheck source=lib.sh
-source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+# shellcheck source=../lib.sh
+source "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
 SUITE=test_garde
+# Portage au harnais du modèle (plugin-plugin, phase 14) : les cas
+# d'origine, mot pour mot, sur les aides de tests/lib.sh.
+attendre() { if eval "$2"; then pass "$1"; else fail "$1" "condition fausse : $2"; fi; }
+GARDE="$SCRIPTS/garde-nixos.sh"
+passe() { run_hook "$GARDE" "$(bash_input "$1" "${2:-Bash}")"; expect_status "passe   : $1" 0; }
+refuse() { run_hook "$GARDE" "$(bash_input "$1" "${2:-Bash}")"; expect_blocked "refuse  : $1"; }
 
 echo "# activer le système reste un geste humain"
 refuse "nixos-rebuild switch"
@@ -281,21 +287,21 @@ rmdir "$vide"
 
 # Le cas d'un NixOS fraîchement installé : nix est là, jq non.
 if command -v nix > /dev/null 2>&1; then
-  sans_jq=$(chemin_restreint nix awk grep tr mktemp rm)
+  sans_jq=$(restricted_path nix awk grep tr mktemp rm)
   for cas in "nixos-rebuild switch:2" "nixos-rebuild build:0" 'sh -c "home-manager switch":2' "nix-env -iA nixpkgs.jq:2" "nix-env -q:0"; do
     cmd=${cas%:*}
     attendu=${cas##*:}
-    statut=$(entree_outil "$cmd" | env PATH="$sans_jq" "$bash_" "$GARDE" > /dev/null 2>&1; echo $?)
+    statut=$(bash_input "$cmd" | env PATH="$sans_jq" "$bash_" "$GARDE" > /dev/null 2>&1; echo $?)
     attendre "sans jq, lu par nix : « $cmd » → $attendu" '[ "$statut" = "$attendu" ]'
   done
   rm -rf "$sans_jq"
 else
-  saute "sans jq, lu par nix" "nix absent"
+  skip "sans jq, lu par nix" "nix absent"
 fi
 
 copie=$(mktemp -d)
 cp "$GARDE" "$copie/garde-nixos.sh"
-sortie=$(entree_outil "nixos-rebuild switch" | bash "$copie/garde-nixos.sh" 2>&1)
+sortie=$(bash_input "nixos-rebuild switch" | bash "$copie/garde-nixos.sh" 2>&1)
 statut=$?
 attendre "la bibliothèque absente fait refuser, pas passer" '[ "$statut" = 2 ] && [[ "$sortie" == *"lib-commande.sh"* ]]'
 rm -rf "$copie"
@@ -317,4 +323,4 @@ attendre "192 Kio, indirection en tête : refusée" '[ "$statut" = 2 ]'
 attendre "192 Kio jugés en moins de 10 s (mesuré : ${duree} s)" '[ "$duree" -lt 10 ]'
 rm -f "$longue"
 
-terminer
+finish

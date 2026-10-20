@@ -35,7 +35,7 @@
 #      seulement s'il n'y en a qu'un : à deux, il ne choisit pas
 #   7. /etc/nixos lui-même
 #
-# SURCHARGES (réservées aux tests — voir tests/test_nixconf.sh)
+# SURCHARGES (réservées aux tests — voir tests/static/test_nixconf.sh)
 #   NIXCONF_ETC             l'emplacement système (défaut : /etc/nixos)
 #   NIXCONF_CHOIX           le fichier du choix (défaut : ~/.config/nixconf/configuration)
 #   NIXCONF_SYSTEME_ACTUEL  le système actif (défaut : /run/current-system)
@@ -62,7 +62,7 @@ nix_conf="${NIXCONF_NIX_CONF:-/etc/nix/nix.conf}"
 
 ici="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 moi="bash $ici/nixconf"
-modeles="$ici/../modeles"
+modeles="$ici/modeles"
 
 # Les flakes ne sont pas activés sur un NixOS fraîchement installé. Le drapeau
 # les active pour cet appel seulement, et ne change rien là où ils le sont déjà.

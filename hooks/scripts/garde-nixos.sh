@@ -37,6 +37,8 @@
 #
 # PreToolUse / matcher Bash|Monitor. Sortie : 0 laisse passer, 2 refuse et
 # renvoie stderr à Claude.
+# Fail-closed : une commande gardée qu'il ne sait pas juger est refusée
+# (sortie 2), et hooks.json pose "onFailure": "block".
 #
 # Testable sans Claude :
 #   echo '{"tool_name":"Bash","tool_input":{"command":"nixos-rebuild switch"}}' | bash garde-nixos.sh
@@ -65,12 +67,12 @@ case "${BASH_SOURCE[0]}" in
   */*) ici="${BASH_SOURCE[0]%/*}" ;;
   *) ici="." ;;
 esac
-if [ ! -r "$ici/lib-commande.sh" ]; then
-  printf 'BLOQUÉ par garde-nixos.sh : lib-commande.sh introuvable à côté du garde.\n' >&2
+if [ ! -r "$ici/lib/lib-commande.sh" ]; then
+  printf 'BLOQUÉ par garde-nixos.sh : lib/lib-commande.sh introuvable à côté du garde.\n' >&2
   exit 2
 fi
-# shellcheck source=lib-commande.sh
-. "$ici/lib-commande.sh"
+# shellcheck source=lib/lib-commande.sh
+. "$ici/lib/lib-commande.sh"
 
 # Un garde qui se désactive en silence est le pire des deux mondes. Arrivé ici,
 # l'entrée nomme un outil gardé : si on ne sait pas la lire, on refuse plutôt
@@ -91,7 +93,7 @@ case $? in
 esac
 decouper
 
-verifier_cmd="bash ${ici%/hooks}/scripts/nixconf verifier"
+verifier_cmd="bash ${ici%/hooks/scripts}/scripts/nixconf verifier"
 
 # $commande est posée par lire_commande (lib-commande.sh) : shellcheck ne suit
 # pas un fichier sourcé dynamiquement, d'où la directive.

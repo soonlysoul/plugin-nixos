@@ -69,7 +69,7 @@ plugin garde. `adopter` la laisse donc dans `/etc/nixos` et en réécrit l'impor
 
 ## Le garde : repris, élargi, et quatre défauts corrigés
 
-`hooks/lib-commande.sh` et `hooks/garde-nixos.sh` reprennent ceux de
+`hooks/scripts/lib/lib-commande.sh` et `hooks/scripts/garde-nixos.sh` reprennent ceux de
 `nixos-config`. Le garde juge une invocation, pas une chaîne, couvre les seize
 chemins de traverse, n'exempte un argument que dans **son** segment, et ne porte
 aucun refus générique. Ce qui a changé :
@@ -130,7 +130,7 @@ arrière-plan, mais lancée.
 une requête qui ne collecte rien. Le garde d'origine refusait la seule manière
 de voir ce qui enracine un chemin.
 
-→ les en-têtes des deux fichiers ; les cas dans `tests/test_garde.sh`.
+→ les en-têtes des deux fichiers ; les cas dans `tests/hooks/test_garde_nixos.sh`.
 
 ## Le serveur MCP : construit une fois, enraciné
 
@@ -161,16 +161,17 @@ Mesuré le 2026-10-19 : nixpkgs 25.05 fournit claude-code 1.0.85, qui n'a pas de
 commande `plugin`. Elle prend `plugin validate` pour une question à envoyer au
 modèle. La 26.05 fournit la 2.1.223. Le README prend donc la première session
 à la révision de nixpkgs-unstable que le lanceur MCP épingle déjà, soit la
-2.1.296, la version testée. `tests/test_statique.sh` vérifie que les deux
+2.1.296, la version testée. `tests/static/test_statique.sh` vérifie que les deux
 révisions restent la même. Le cache binaire n'a pas claude-code, qui n'est pas
 libre (vérifié le même jour) : Nix le construit sur place, à partir du binaire
 publié.
 
-Un poste en 26.05 peut ensuite déclarer le claude-code de son canal.
-`hooks/hooks.json` s'en tient donc à la forme la plus ancienne, une chaîne
-`command`, sans `args` ni `onFailure`, et `tests/test_statique.sh` l'impose. Le
-validateur de la 2.1.223 accepte ces champs récents (mesuré), mais ce qu'il en
-fait à l'exécution ne l'est pas. La forme ancienne, elle, fonctionne partout.
+Réécrit au modèle par plugin-plugin, `hooks/hooks.json` prend la forme exec :
+`command` « bash », le garde seul dans `args`, `"onFailure": "block"`. Elle
+demande Claude Code 2.1.295 au moins, et `tests/static/test_statique.sh`
+l'impose. La 2.1.296 de la première session y suffit. La 2.1.223 de la 26.05
+est en dessous : son validateur accepte ces champs (mesuré), ce qu'elle en
+fait à l'exécution ne l'est pas.
 
 ## Ce qui a été écarté, et pour quelle raison propre
 

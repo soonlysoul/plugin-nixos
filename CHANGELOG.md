@@ -1,13 +1,31 @@
 # Journal des versions
 
-## 0.1.2 — 2026-10-19
+## [à venir] — en cours
+
+Réécrit au modèle de plugin-flutter par plugin-plugin, depuis 0.1.2 : mêmes
+skills, même garde, même serveur MCP, et chaque cas des suites d'origine garde
+son équivalent.
+
+- Claude Code **2.1.295 ou plus** requis : le garde est déclaré en forme exec
+  (`command` « bash », le script dans `args`), avec `"onFailure": "block"`. Un
+  garde qui plante, est introuvable ou dépasse ses 15 secondes bloque
+  désormais la commande, au lieu de la laisser passer. Sur un poste resté à la
+  2.1.223 de NixOS 26.05, le garde n'est plus garanti.
+- Le garde et sa bibliothèque passent sous `hooks/scripts/`, le gabarit
+  `flake.nix` sous `scripts/modeles/`.
+- Les tests passent au harnais du modèle, sous `tests/hooks/` et
+  `tests/static/`, avec les contrôles d'en-têtes, de manifeste, de chemins et
+  du serveur MCP.
+- `PROGRESS.md` et `docs/` : installation, usage, sécurité, dépannage.
+
+## [0.1.2] — 2026-10-19
 
 - `home-manager` et `nh` sont jugés sur liste blanche, comme `nixos-rebuild`.
   `home-manager expire-generations`, `remove-generations`, `uninstall` et
   `init` sont refusés, ainsi que toute sous-commande masquée (`sw\itch`) ou
   inconnue. Seul `switch` l'était avant.
 
-## 0.1.1 — 2026-10-19
+## [0.1.1] — 2026-10-19
 
 - Le garde refuse aussi `nixos-rebuild switch` (et les autres gestes gardés)
   lancé par une enveloppe : `run0`, `pkexec`, `systemd-run`, `flock`, `chroot`,
@@ -19,7 +37,7 @@
   1.0.85, qui ne connaît pas les plugins. Un test vérifie que les deux
   révisions restent la même.
 
-## 0.1.0 — 2026-10-19
+## [0.1.0] — 2026-10-19
 
 Première version, tirée du plugin `nixos` du dépôt `nixos-config` et rendue
 indépendante d'une machine.

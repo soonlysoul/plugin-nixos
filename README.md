@@ -10,7 +10,8 @@ configuration et de détruire des générations.
 Rien n'y est propre à une machine. Installé sur un PC neuf, il sert tout de
 suite, sans `jq`, sans flakes activés et sans `mcp-nixos` déclaré.
 
-Version **0.1.2**. Testé avec Claude Code 2.1.296 sur NixOS 25.05.
+Version **0.2.0**. Testé avec Claude Code 2.1.296 sur NixOS 25.05 ; Claude Code
+2.1.295 ou plus requis (forme exec des hooks).
 
 ## Ce qu'il apporte
 
@@ -140,6 +141,12 @@ protège du ramasse-miettes. Le déclarer dans la configuration supprime cette a
 
 Hors ligne, la découverte s'arrête et la preuve locale continue : aucune
 vérification ne dépend du serveur.
+
+## Serveurs MCP
+
+Déclarés dans `.mcp.json`, sans rien installer : chaque valeur vient de l'environnement de l'utilisateur, en `${VAR}`. Un skill qui dépend d'un serveur a besoin d'une doublure dans `evals/mocks/<serveur>/` pour être évalué ; sans elle, le serveur n'est pas démarré pendant une évaluation.
+
+- `nixos` — local, lancé par `scripts/mcp-nixos.sh` ; variables : aucune ; doublure d'évaluation : `evals/mocks/nixos/`.
 
 ## Tests
 

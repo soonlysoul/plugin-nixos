@@ -3,6 +3,10 @@
 .shots/
 repomix-output.xml
 
+# Build output and eval results
+build/
+evals/**/results/
+
 # Test artefacts
 tests/.tmp/
 
@@ -11,3 +15,12 @@ tests/.tmp/
 *.swp
 .idea/
 .vscode/
+
+# Volatile state: the resumption point, and a publication's plan, announcement and journals of
+# consents and gestures, written while the tree must stay clean. Approvals of documents and
+# delegated decisions are versioned.
+.plugin-plugin/checkpoint.md
+.plugin-plugin/publication.json
+.plugin-plugin/pending
+.plugin-plugin/consents.log
+.plugin-plugin/gestures.log
